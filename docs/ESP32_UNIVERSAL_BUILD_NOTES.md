@@ -85,22 +85,24 @@ interfering with subsequent probes on different pin configurations.
 
 ## Testing
 
-### Tested Hardware
+### Tested Hardware (2026-03-15)
 
 | Board | Display | Status | Notes |
 |---|---|---|---|
-| CYD 3.2" ESP32-2432S032 | ST7789 | ✅ Verified | On branch `cyd-universal` (predecessor) |
-| Lolin D32 Pro + TFT Shield | ILI9341 | ✅ Verified | Logo, AP screen, backlight all working |
+| Lolin D32 Pro + TFT Shield | ILI9341 | ✅ All tests pass | Logo, WiFi, mDNS, Tilt (2 hydrometers), rotation |
+| CYD 3.2" ESP32-2432S032 | ST7789 | ✅ All tests pass | Logo, WiFi, mDNS, Tilt, rotation hint |
+| Heltec WiFi Kit 32 | SSD1306 OLED | ✅ All tests pass | WiFi, mDNS, Tilt, rotation |
 
 ### Pending Hardware Tests
 
 | Board | Display | Status |
 |---|---|---|
-| CYD 2.4" / 2.8" | ILI9341 / ILI9342 | ⏳ Hardware arrives next week |
+| CYD 2.4" (ESP32-2432S024) | ILI9341 | ⏳ Not yet tested |
+| CYD 2.8" v1/v2/v3 (ESP32-2432S028) | ILI9341 / ILI9342 | ⏳ Not yet tested |
 | M5StickC Plus | ST7789 | ⏳ No hardware available |
 | M5StickC Plus2 | ST7789 | ⏳ No hardware available |
 | TTGO TFT | ST7789 | ⏳ No hardware available |
-| SSD1306 OLED | SSD1306 | ⏳ No hardware available |
+| Headless (no display) | — | ⏳ Not yet tested |
 
 ## Issues Encountered & Solutions
 
@@ -160,7 +162,33 @@ image buffer during DMA transfer, exceeding available memory or causing a watchd
 2. Universal build includes `tft_logo_swapped.h` instead of `tft_logo.h`
 3. `pushImage()` called with `setSwapBytes(false)` → no DMA issue, correct colors
 
-### 6. Serial Port Issues
+### 6. TTGO False Positive on Heltec OLED Board
+
+**Problem**: On the Heltec WiFi Kit 32, the TTGO TFT probe (Probe 4) returned
+`0xFFFFFFFF` which was accepted as a valid display ID. The device was misidentified
+as TTGO TFT instead of SSD1306 OLED.
+
+**Root cause**: The original validation checked `id != 0 && id != 0xFFFFFF` (24-bit),
+but `readCommand` returns a 32-bit value. `0xFFFFFFFF != 0x00FFFFFF` evaluated to true.
+
+**Solution**: Introduced `is_valid_display_id()` which rejects:
+- `0x00000000` (no device, MISO floating low)
+- `0xFFFFFFFF` (no device, MISO floating high)
+- `0x00FFFFFF` (common empty response)
+- Repeating byte patterns like `0x1F1F1F1F` (floating pin noise)
+
+### 7. SSD1306 OLED Text Layout in Universal Build
+
+**Problem**: The `print_line()` function used the LCD_TFT code path (large display
+formatting) for SSD1306 OLEDs in the universal build, because the guard only checked
+`#elif defined(LCD_TFT) || defined(UNIVERSAL_BUILD)`. The OLED text was positioned
+incorrectly and AP credentials were not visible.
+
+**Solution**: Added display category check within the UNIVERSAL_BUILD path: SSD1306
+displays use the small-display text layout (SSD1306 style), while TFT displays use
+the large-display layout.
+
+### 8. Serial Port Issues
 
 **Problem**: PlatformIO auto-detected Bluetooth speaker (`/dev/cu.soundcoreQ20i`)
 instead of USB serial. Also, port busy when serial monitor was open.
@@ -179,6 +207,16 @@ esp32_universal   1,674,832     ~1.55 MB      ~51%
 The build includes all display drivers and both logo images. The original per-board
 builds range from 35-45% flash usage, so the universal build adds ~6-16% overhead
 for the additional display drivers.
+
+## Related Documentation
+
+- **[AUTODETECTION_DEEP_DIVE.md](AUTODETECTION_DEEP_DIVE.md)** — Detailed analysis
+  of the auto-detection logic, false positive/negative risks, crash potentials, and
+  timing measurements.
+- **[ESP32_UNIVERSAL_TEST_PLAN.md](ESP32_UNIVERSAL_TEST_PLAN.md)** — Complete test
+  matrix with results for all board types.
+- **[UNIVERSAL_DETECT_PLAN.md](UNIVERSAL_DETECT_PLAN.md)** — Original implementation
+  plan (phases 1–5).
 
 ## Branch History
 
