@@ -2,7 +2,7 @@
 // Created by John Beeler on 4/10/20.
 //
 
-#ifdef LCD_TFT
+#if defined(LCD_TFT) || defined(UNIVERSAL_BUILD)
 
 #ifndef _TFT_LOGO_H
 #define _TFT_LOGO_H
@@ -4342,4 +4342,4 @@ const unsigned short	 pixel_data[288 * 240 * 2 + 1] PROGMEM;
 
 #endif // _TFT_LOGO_H
 
-#endif // LCD_TFT
+#endif // LCD_TFT || UNIVERSAL_BUILD
