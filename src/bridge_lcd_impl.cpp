@@ -4,7 +4,7 @@
 #include <driver/gpio.h>
 #include <thorlog.h>
 
-#if defined(LCD_SSD1306)
+#if defined(LCD_SSD1306) || defined(UNIVERSAL_BUILD)
 #include <driver/i2c_master.h>
 #endif
 
@@ -46,19 +46,22 @@ static inline void yield() {
 #if HAVE_LCD
 #include "lovyan_config.h"
 
-#if defined(LCD_SSD1306) || defined(LCD_TFT_ESPI)
+#if defined(UNIVERSAL_BUILD)
+#include "img/oled_logo.h"        // Small logo (for small displays)
+#include "img/tft_logo_swapped.h" // Large logo, byte-swapped for setSwapBytes(false)
+#elif defined(LCD_SSD1306) || defined(LCD_TFT_ESPI)
 #include "img/oled_logo.h" // Small logo
 #elif defined(LCD_TFT)
 #include "img/tft_logo.h" // Large logo
 #endif
 #endif // HAVE_LCD
 
-#if defined(AXP192)
+#if defined(AXP192) || defined(UNIVERSAL_BUILD)
 #include "axp192.h"  // ESP-IDF compatible AXP192 driver for M5StickC Plus
 AXP192_Driver axp192_driver;
 #endif
 
-#ifdef LCD_TFT_M5STICKC
+#if defined(LCD_TFT_M5STICKC) || defined(UNIVERSAL_BUILD)
 bridge_lcd::M5Variant bridge_lcd::detect_m5_variant() {
     // Use AXP192's detect method to check for device presence
     if (axp192_driver.detect(21, 22)) {
@@ -70,6 +73,223 @@ bridge_lcd::M5Variant bridge_lcd::detect_m5_variant() {
     }
 }
 #endif
+
+#ifdef UNIVERSAL_BUILD
+// Helper: probe SPI display by reading ID via command 0x04
+static uint32_t _do_spi_probe(lgfx::Bus_SPI& bus, int cs)
+{
+    bus.beginTransaction();
+    gpio_set_level((gpio_num_t)cs, 1);
+    bus.writeCommand(0, 8);  // NOP
+    bus.wait();
+    gpio_set_level((gpio_num_t)cs, 0);
+    bus.writeCommand(0x04, 8);  // RDDID
+    bus.beginRead(1);
+    uint32_t res = 0;
+    for (int i = 0; i < 4; ++i) {
+        res |= (bus.readData(8) & 0xFF) << (i * 8);
+    }
+    bus.endTransaction();
+    gpio_set_level((gpio_num_t)cs, 1);
+    return res;
+}
+
+static uint32_t probe_spi_display(int sclk, int mosi, int miso, int dc, int cs,
+                                   spi_host_device_t host, int rst = -1)
+{
+    lgfx::Bus_SPI bus;
+
+    // Configure CS as output
+    gpio_config_t cs_conf = {
+        .pin_bit_mask = (1ULL << cs),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&cs_conf);
+    gpio_set_level((gpio_num_t)cs, 1);
+
+    // Toggle reset pin if provided
+    if (rst >= 0) {
+        gpio_config_t rst_conf = {
+            .pin_bit_mask = (1ULL << rst),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&rst_conf);
+        gpio_set_level((gpio_num_t)rst, 0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gpio_set_level((gpio_num_t)rst, 1);
+        vTaskDelay(pdMS_TO_TICKS(120));  // Wait for display to initialize after reset
+    }
+
+    // Probe with 4-wire SPI (read from MISO) — only reliable method
+    // 3-wire (bidirectional MOSI) produces false positives on floating pins
+    uint32_t res = 0;
+    {
+        auto cfg = bus.config();
+        cfg.spi_host = host; cfg.spi_mode = 0;
+        cfg.freq_write = 10000000; cfg.freq_read = 8000000;
+        cfg.spi_3wire = (miso < 0);
+        cfg.use_lock = true; cfg.dma_channel = SPI_DMA_CH_AUTO;
+        cfg.pin_sclk = sclk; cfg.pin_mosi = mosi; cfg.pin_miso = miso; cfg.pin_dc = dc;
+        bus.config(cfg);
+        bus.init();
+        res = _do_spi_probe(bus, cs);
+        bus.release();
+    }
+
+    // Reset probed pins to input (high-Z) to avoid interfering with other probes
+    gpio_config_t reset_conf = {
+        .pin_bit_mask = (1ULL << sclk) | (1ULL << mosi) | (1ULL << dc) | (1ULL << cs),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    if (miso >= 0) reset_conf.pin_bit_mask |= (1ULL << miso);
+    if (rst >= 0) reset_conf.pin_bit_mask |= (1ULL << rst);
+    gpio_config(&reset_conf);
+
+    return res;
+}
+
+void bridge_lcd::detect_display()
+{
+    ESP_LOGW("DETECT", "Starting display auto-detection...");
+
+    // ---- Probe 1: AXP192 on I2C (M5StickC Plus) ----
+    if (axp192_driver.detect(21, 22)) {
+        ESP_LOGW("DETECT", "Found AXP192 -> M5StickC Plus");
+        display_info = {
+            .type = DisplayType::DISP_M5STICKC_PLUS,
+            .category = DisplayCategory::CAT_SMALL,
+            .width = 135, .height = 240,
+            .has_touch = false, .has_axp192 = true,
+            .tilts_per_page = 5,
+            .hardware_version = "M5StickC Plus",
+        };
+        return;
+    }
+
+    // ---- Probe 2: CYD on HSPI (SCLK=14, MOSI=13, MISO=12, DC=2, CS=15) ----
+    {
+        uint32_t id = probe_spi_display(14, 13, 12, 2, 15, HSPI_HOST);
+        ESP_LOGW("DETECT", "CYD probe HSPI: ID=0x%08X", (unsigned)id);
+        if (id != 0 && id != 0xFFFFFFFF) {
+            ESP_LOGW("DETECT", "Found display on CYD pins -> CYD");
+            display_info = {
+                .type = DisplayType::DISP_CYD,
+                .category = DisplayCategory::CAT_LARGE,
+                .width = 240, .height = 320,
+                .has_touch = true, .has_axp192 = false,
+                .tilts_per_page = 15,
+                .hardware_version = "CYD",
+            };
+            return;
+        }
+    }
+
+    // ---- Probe 3: D32 Pro on VSPI (SCLK=18, MOSI=23, MISO=19, DC=27, CS=14, RST=33) ----
+    // Init the actual LGFX class and read ID; keep the object if display found.
+    {
+        auto* d32 = new LGFX_D32_Pro();
+        d32->init();
+        uint32_t id = d32->getPanel()->readCommand(0x04, 0, 4);
+        ESP_LOGW("DETECT", "D32 Pro init+read: ID=0x%06X", (unsigned)id);
+        if (id != 0 && id != 0xFFFFFF) {
+            ESP_LOGW("DETECT", "Found D32 Pro TFT (ILI9341)");
+            tft = d32;  // Keep the initialized display object
+            display_info = {
+                .type = DisplayType::DISP_D32_PRO,
+                .category = DisplayCategory::CAT_LARGE,
+                .width = 240, .height = 320,
+                .has_touch = false, .has_axp192 = false,
+                .tilts_per_page = 15,
+                .hardware_version = "D32 Pro TFT",
+            };
+            return;
+        }
+        delete d32;
+    }
+
+    // ---- Probe 4: TTGO TFT on VSPI (SCLK=18, MOSI=19, DC=16, CS=5) ----
+    {
+        auto* ttgo = new LGFX_TFT_ESPI();
+        ttgo->init();
+        uint32_t id = ttgo->getPanel()->readCommand(0x04, 0, 4);
+        ESP_LOGW("DETECT", "TTGO init+read: ID=0x%06X", (unsigned)id);
+        if (id != 0 && id != 0xFFFFFF) {
+            ESP_LOGW("DETECT", "Found TTGO TFT (ST7789)");
+            tft = ttgo;  // Keep the initialized display object
+            display_info = {
+                .type = DisplayType::DISP_TTGO_TFT,
+                .category = DisplayCategory::CAT_SMALL,
+                .width = 135, .height = 240,
+                .has_touch = false, .has_axp192 = false,
+                .tilts_per_page = 5,
+                .hardware_version = "TTGO TFT",
+            };
+            return;
+        }
+        delete ttgo;
+    }
+
+    // ---- Probe 5: M5StickC Plus2 on HSPI (SCLK=13, MOSI=15, DC=14, CS=5) ----
+    {
+        auto* m5 = new LGFX_M5StickC();
+        m5->configure(true);  // Plus2 variant
+        m5->init();
+        uint32_t id = m5->getPanel()->readCommand(0x04, 0, 4);
+        ESP_LOGW("DETECT", "M5StickC Plus2 init+read: ID=0x%06X", (unsigned)id);
+        if (id != 0 && id != 0xFFFFFF) {
+            ESP_LOGW("DETECT", "Found M5StickC Plus2");
+            tft = m5;  // Keep the initialized display object
+            display_info = {
+                .type = DisplayType::DISP_M5STICKC_PLUS2,
+                .category = DisplayCategory::CAT_SMALL,
+                .width = 135, .height = 240,
+                .has_touch = false, .has_axp192 = false,
+                .tilts_per_page = 5,
+                .hardware_version = "M5StickC Plus2",
+            };
+            return;
+        }
+        delete m5;
+    }
+
+    // ---- Probe 6: SSD1306 OLED on I2C ----
+    if (i2c_device_at_address(0x3C, 5, 4) ||
+        i2c_device_at_address(0x3C, 21, 22) ||
+        i2c_device_at_address(0x3C, 4, 15) ||
+        i2c_device_at_address(0x3C, 17, 18)) {
+        ESP_LOGW("DETECT", "Found SSD1306 OLED on I2C");
+        display_info = {
+            .type = DisplayType::DISP_SSD1306,
+            .category = DisplayCategory::CAT_SMALL,
+            .width = 128, .height = 64,
+            .has_touch = false, .has_axp192 = false,
+            .tilts_per_page = 5,
+            .hardware_version = "OLED SSD1306",
+        };
+        return;
+    }
+
+    // ---- Nothing found: headless ----
+    ESP_LOGW("DETECT", "No display found -> headless mode");
+    display_info = {
+        .type = DisplayType::DISP_NONE,
+        .category = DisplayCategory::CAT_NONE,
+        .width = 0, .height = 0,
+        .has_touch = false, .has_axp192 = false,
+        .tilts_per_page = 1,
+        .hardware_version = "Headless",
+    };
+}
+#endif // UNIVERSAL_BUILD
 
 
 ////////////////////////////////////////////////////////////
@@ -239,17 +459,125 @@ void bridge_lcd::init() {
     digitalWrite(TFT_BACKLIGHT, HIGH);
 #endif // TFT_BACKLIGHT
 
-#endif // LCD_TFT_ESPI
+#elif defined(UNIVERSAL_BUILD)
+    // ---- Universal build: detect display at runtime ----
+    detect_display();
+    ESP_LOGW("DETECT", "Display type: %s (%dx%d)", display_info.hardware_version,
+             display_info.width, display_info.height);
+
+    switch (display_info.type) {
+    case DisplayType::DISP_CYD: {
+        auto cyd_tft = new LGFX_CYD();
+        cyd_tft->configure();
+        tft = cyd_tft;
+        tft->init();
+        tft->setSwapBytes(true);
+        reinit();
+        tft->setFont(&FreeSans9pt7b);
+        break;
+    }
+    case DisplayType::DISP_D32_PRO: {
+        if (!tft) {
+            tft = new LGFX_D32_Pro();
+        }
+        tft->init();
+        // D32 Pro TFT shield backlight on GPIO 32
+        pinMode(32, OUTPUT);
+        digitalWrite(32, HIGH);
+        tft->setSwapBytes(true);
+        reinit();
+        tft->setFont(&FreeSans9pt7b);
+        break;
+    }
+    case DisplayType::DISP_M5STICKC_PLUS: {
+        // Init AXP192 power
+        AXP192_InitDef initDef = {
+            .EXTEN = true, .BACKUP = true,
+            .DCDC1 = 3300, .DCDC2 = 0, .DCDC3 = 0,
+            .LDO2 = 3000, .LDO3 = 3000, .GPIO0 = 2800,
+            .GPIO1 = -1, .GPIO2 = -1, .GPIO3 = -1, .GPIO4 = -1,
+        };
+        axp192_driver.begin(21, 22, initDef);
+        auto m5_tft = new LGFX_M5StickC();
+        m5_tft->configure(false);  // Plus (not Plus2)
+        tft = m5_tft;
+        tft->init();
+        tft->setSwapBytes(true);
+        reinit();
+        tft->setFont(&FreeSans9pt7b);
+        break;
+    }
+    case DisplayType::DISP_M5STICKC_PLUS2: {
+        pinMode(27, OUTPUT);
+        digitalWrite(27, HIGH);
+        if (!tft) {
+            auto m5_tft = new LGFX_M5StickC();
+            m5_tft->configure(true);  // Plus2
+            tft = m5_tft;
+            tft->init();
+        }
+        tft->setSwapBytes(true);
+        reinit();
+        tft->setFont(&FreeSans9pt7b);
+        break;
+    }
+    case DisplayType::DISP_TTGO_TFT: {
+        if (!tft) {
+            tft = new LGFX_TFT_ESPI();
+            tft->init();
+        }
+        tft->setSwapBytes(true);
+        reinit();
+        tft->setFont(&FreeSans9pt7b);
+        break;
+    }
+    case DisplayType::DISP_SSD1306: {
+        // Probe again to find the right I2C pins
+        int sda_pin = 21, scl_pin = 22;  // Default
+        if (i2c_device_at_address(0x3C, 5, 4)) { sda_pin = 5; scl_pin = 4; }
+        else if (i2c_device_at_address(0x3C, 21, 22)) { sda_pin = 21; scl_pin = 22; }
+        else if (i2c_device_at_address(0x3C, 4, 15)) {
+            pinMode(16, OUTPUT); digitalWrite(16, HIGH);
+            sda_pin = 4; scl_pin = 15;
+        }
+        else if (i2c_device_at_address(0x3C, 17, 18)) {
+            pinMode(21, OUTPUT); digitalWrite(21, HIGH);
+            sda_pin = 17; scl_pin = 18;
+        }
+        auto ssd1306_tft = new LGFX_SSD1306();
+        ssd1306_tft->configure(sda_pin, scl_pin);
+        tft = ssd1306_tft;
+        tft->init();
+        if (!config.invertTFT) tft->setRotation(2);
+        else tft->setRotation(0);
+        break;
+    }
+    case DisplayType::DISP_NONE:
+    default:
+        ESP_LOGW("DETECT", "Running in headless mode");
+        tft = nullptr;
+        break;
+    }
+
+#endif // LCD_TFT_ESPI / UNIVERSAL_BUILD
 }
 
 void bridge_lcd::reinit() {
-#if defined(LCD_TFT) || defined(LCD_TFT_ESPI)
+#if defined(LCD_TFT) || defined(LCD_TFT_ESPI) || defined(UNIVERSAL_BUILD)
     clear();
+#if defined(UNIVERSAL_BUILD)
+    if (display_info.type == DisplayType::DISP_SSD1306) {
+        tft->setRotation(config.invertTFT ? 0 : 2);
+    } else {
+        tft->setRotation(config.invertTFT ? 1 : 3);
+    }
+#else
     if (config.invertTFT) {
         tft->setRotation(1);
     } else {
         tft->setRotation(3);
     }
+#endif
 #elif defined (LCD_SSD1306)
     // We can only flip the screen, not determine the current orientation
     if(config.invertTFT) {
@@ -321,7 +649,7 @@ void bridge_lcd::print_line(const char *left_text, const char *middle_text, cons
 
     tft->setTextDatum(textdatum_t::top_right);
     tft->drawString(right_text, 128, starting_pixel_row);
-#elif defined(LCD_TFT)
+#elif defined(LCD_TFT) || defined(UNIVERSAL_BUILD)
     int16_t starting_pixel_row = 0;
     starting_pixel_row = (tft->fontHeight()) * (line - 1) + 2;
 
@@ -352,10 +680,8 @@ void bridge_lcd::print_line(const char *left_text, const char *middle_text, cons
 
 
 void bridge_lcd::clear() {
-#ifdef LCD_SSD1306
-    tft->fillScreen(0x0000);  // Black color
-#elif defined(LCD_TFT) || defined(LCD_TFT_ESPI)
-    tft->fillScreen(0x0000);  // Black color in 16-bit RGB565 format
+#if defined(LCD_SSD1306) || defined(LCD_TFT) || defined(LCD_TFT_ESPI) || defined(UNIVERSAL_BUILD)
+    tft->fillScreen(0x0000);  // Black
 #endif
     yield();
 }
@@ -378,7 +704,7 @@ void bridge_lcd::print_tilt_to_line(tiltHydrometer *tilt, uint8_t line) {
     // Print line with gutter for the color block for TFT screens
     print_line(tilt_color_names[tilt->m_color], temp, gravity, line, true);
 
-#ifdef LCD_TFT
+#if defined(LCD_TFT) || defined(UNIVERSAL_BUILD)
     uint16_t fHeight = tft->fontHeight();
     if (tilt_text_colors[tilt->m_color] == 0xFFFF) { // White outline, black square
         tft->fillRect( // White square
@@ -408,7 +734,7 @@ void bridge_lcd::print_tilt_to_line(tiltHydrometer *tilt, uint8_t line) {
 }
 
 bool bridge_lcd::i2c_device_at_address(uint8_t address, int sda_pin, int scl_pin) {
-#ifdef LCD_SSD1306
+#if defined(LCD_SSD1306) || defined(UNIVERSAL_BUILD)
     // LCD autodetection using the new ESP-IDF 5.x I2C master driver API
     i2c_master_bus_config_t bus_config = {
         .i2c_port = I2C_NUM_0,
@@ -460,6 +786,27 @@ void bridge_lcd::display_logo_internal() {
         gimp_image.width,
         gimp_image.height,
         gimp_image.pixel_data);
+#elif defined(UNIVERSAL_BUILD)
+    if (display_info.category == DisplayCategory::CAT_LARGE) {
+        // pushImage with setSwapBytes(true) crashes on universal build (DMA issue),
+        // so we use pre-swapped image data with setSwapBytes(false).
+        tft->setSwapBytes(false);
+        tft->pushImage(
+            (tft->width() - gimp_image_swapped.width) / 2, 0,
+            gimp_image_swapped.width,
+            gimp_image_swapped.height,
+            (const uint16_t*)gimp_image_swapped.pixel_data);
+        tft->setSwapBytes(true);
+    } else {
+        // Small displays: use XBitmap logo
+        tft->drawXBitmap(
+            (tft->width() - oled_logo_width) / 2,
+            (tft->height() - oled_logo_height) / 2,
+            oled_logo_bits,
+            oled_logo_width,
+            oled_logo_height,
+            0xFFFF);
+    }
 #elif defined(LCD_TFT_ESPI)
     tft->drawXBitmap(
         (tft->width() - oled_logo_width) / 2,
