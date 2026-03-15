@@ -58,12 +58,16 @@ void bridge_lcd::display_wifi_connect_screen(const char *ap_name, const char *ap
     print_line("Name:", ap_name, 3);
     print_line("Pass: ", ap_pass, 4);
 
-#ifdef LCD_TFT
-// TODO - See if the next line can be removed without issue
-    // tft->setFreeFont(FF_NORMAL);
+#if defined(LCD_TFT)
     print_line("NOTE - If this appears upside-down,", 8);
     print_line("this can be corrected via a setting in the", 9);
     print_line("settings portal after connecting to WiFi", 10);
+#elif defined(UNIVERSAL_BUILD)
+    if (display_info.category == DisplayCategory::CAT_LARGE) {
+        print_line("NOTE - If this appears upside-down,", 8);
+        print_line("this can be corrected via a setting in the", 9);
+        print_line("settings portal after connecting to WiFi", 10);
+    }
 #endif
 
     display();
