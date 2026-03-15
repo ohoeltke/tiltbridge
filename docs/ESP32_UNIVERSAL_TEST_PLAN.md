@@ -26,13 +26,14 @@ at runtime and must behave identically to the existing per-board build targets.
 | T1.3 | Backlight turns on | GPIO 32 HIGH, display illuminated | ✅ Pass |
 | T1.4 | TiltBridge logo displayed | Blue logo shown with correct colors for ~2 seconds | ✅ Pass |
 | T1.5 | WiFi AP screen | Shows "TiltBridgeAP" SSID and IP 192.168.4.1 | ✅ Pass |
-| T1.6 | WiFi configuration via browser | Connect to AP, open 192.168.4.1, configure WiFi | |
-| T1.7 | WiFi connected screen | Shows mDNS URL and IP address | |
-| T1.8 | Tilt display | Shows Tilt hydrometer data (temp, gravity, color block) | |
-| T1.9 | Screen rotation (invertTFT) | Display flips 180° when invertTFT toggled in config | |
-| T1.10 | OTA update screen | Shows OTA progress during firmware update | |
-| T1.11 | Reboot cycle | Device reboots cleanly, re-detects display, shows logo | |
-| T1.12 | Compare with per-board build | Behavior matches `env:d32_pro_tft` build | |
+| T1.6 | WiFi configuration via browser | Connect to AP, open 192.168.4.1, configure WiFi | ✅ Pass |
+| T1.7 | WiFi connected screen | Shows mDNS URL and IP address, mDNS resolves | ✅ Pass |
+| T1.8 | Tilt display | Shows Tilt hydrometer data (temp, gravity, color block) | ✅ Pass |
+| T1.9 | Screen rotation (invertTFT) | Display flips 180° when invertTFT toggled in config | ✅ Pass |
+| T1.10 | OTA update screen | Shows OTA progress during firmware update | ⏭️ Skipped |
+| T1.11 | Reboot cycle | Device reboots cleanly, re-detects display, shows logo | ✅ Pass |
+| T1.12 | Compare with per-board build | Behavior matches `env:d32_pro_tft` build | ✅ Pass |
+| T1.13 | Rotation hint on AP screen | "NOTE - If this appears upside-down..." text shown on large displays | ✅ Pass |
 
 ### T2 — CYD 2.4" (ESP32-2432S024, ILI9341)
 
@@ -46,7 +47,8 @@ at runtime and must behave identically to the existing per-board build targets.
 | T2.6 | WiFi AP screen | Shows AP name and IP | |
 | T2.7 | Touch functionality | Touch input works for screen navigation | |
 | T2.8 | Tilt display | Shows Tilt data with color blocks | |
-| T2.9 | Compare with per-board build | Behavior matches `env:lcd_tft` CYD build | |
+| T2.9 | Rotation hint on AP screen | "NOTE - If this appears upside-down..." text shown | |
+| T2.10 | Compare with per-board build | Behavior matches `env:lcd_tft` CYD build | |
 
 ### T3 — CYD 2.8" v1/v2/v3 (ESP32-2432S028, ILI9341/ILI9342)
 
@@ -66,8 +68,9 @@ at runtime and must behave identically to the existing per-board build targets.
 | T4.2 | CYD panel auto-detection | `Detected ST7789 display, backlight=GPIO27` | ✅ Pass (verified on cyd-universal) |
 | T4.3 | Backlight pin correct | GPIO 27 (different from 2.4"/2.8" models!) | ✅ Pass |
 | T4.4 | Color inversion | ST7789 uses `invert=true`, colors correct | ✅ Pass |
-| T4.5 | Display content | Logo, AP screen, Tilt data all render correctly | |
+| T4.5 | Display content | Logo, AP screen, Tilt data all render correctly | ✅ Pass |
 | T4.6 | Touch functionality | XPT2046 touch works | |
+| T4.7 | Rotation hint on AP screen | "NOTE - If this appears upside-down..." text shown | ✅ Pass |
 
 ### T5 — M5StickC Plus (AXP192 + ST7789)
 
@@ -106,13 +109,13 @@ at runtime and must behave identically to the existing per-board build targets.
 
 | # | Test | Expected Result | Status |
 |---|------|----------------|--------|
-| T8.1 | Flash universal binary, observe serial log | `DETECT: Found SSD1306 OLED on I2C` | |
-| T8.2 | Display type reported correctly | `Display type: OLED SSD1306 (128x64)` | |
-| T8.3 | I2C pin detection | Correct SDA/SCL pins detected for the board variant | |
-| T8.4 | Display content | XBitmap logo, text screens | |
-| T8.5 | Screen rotation | invertTFT config flips display | |
-| T8.6 | Tilt display | Tilt data in small OLED format | |
-| T8.7 | Compare with per-board build | Behavior matches `env:lcd_ssd1306` build | |
+| T8.1 | Flash universal binary, observe serial log | `DETECT: Found SSD1306 OLED on I2C` | ✅ Pass |
+| T8.2 | Display type reported correctly | `Display type: OLED SSD1306 (128x64)` | ✅ Pass |
+| T8.3 | I2C pin detection | Correct SDA/SCL pins detected for the board variant | ✅ Pass |
+| T8.4 | Display content | XBitmap logo, text screens | ✅ Pass |
+| T8.5 | Screen rotation | invertTFT config flips display | ✅ Pass |
+| T8.6 | Tilt display | Tilt data in small OLED format | ✅ Pass |
+| T8.7 | Compare with per-board build | Behavior matches `env:lcd_ssd1306` build | ✅ Pass |
 
 ### T9 — Headless (no display connected)
 
@@ -183,5 +186,6 @@ at runtime and must behave identically to the existing per-board build targets.
 
 | Date | Tester | Hardware | Tests Run | Results | Notes |
 |------|--------|----------|-----------|---------|-------|
-| 2026-03-15 | oho | D32 Pro + ILI9341 | T1.1–T1.5, TX1, TX2.1, TX3.3 | All pass | First successful universal boot on D32 Pro |
-| 2026-03-15 | oho | CYD 3.2" ST7789 | T4.1–T4.4 | All pass | Verified on cyd-universal branch |
+| 2026-03-15 | oho | D32 Pro + ILI9341 | T1.1–T1.13, TX1, TX2.1, TX3.3 | All pass (T1.10 skipped) | Full test, including Tilt with 2 hydrometers |
+| 2026-03-15 | oho | CYD 3.2" ST7789 | T4.1–T4.5, T4.7 | All pass | Logo, AP screen, rotation hint verified |
+| 2026-03-15 | oho | Heltec SSD1306 OLED | T8.1–T8.7 | All pass | Fixed false positive detection (TTGO/M5), fixed OLED print_line layout |

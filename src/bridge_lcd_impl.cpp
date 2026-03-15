@@ -75,6 +75,17 @@ bridge_lcd::M5Variant bridge_lcd::detect_m5_variant() {
 #endif
 
 #ifdef UNIVERSAL_BUILD
+// Check if a display ID looks valid (not all-zero, all-ones, or repeating byte pattern)
+static bool is_valid_display_id(uint32_t id)
+{
+    if (id == 0 || id == 0xFFFFFFFF || id == 0x00FFFFFF) return false;
+    // Reject repeating byte patterns (e.g. 0x1F1F1F1F, 0xA5A5A5A5) — floating pins
+    uint8_t b0 = id & 0xFF;
+    if (((id >> 8) & 0xFF) == b0 && ((id >> 16) & 0xFF) == b0 && ((id >> 24) & 0xFF) == b0)
+        return false;
+    return true;
+}
+
 // Helper: probe SPI display by reading ID via command 0x04
 static uint32_t _do_spi_probe(lgfx::Bus_SPI& bus, int cs)
 {
@@ -179,7 +190,7 @@ void bridge_lcd::detect_display()
     {
         uint32_t id = probe_spi_display(14, 13, 12, 2, 15, HSPI_HOST);
         ESP_LOGW("DETECT", "CYD probe HSPI: ID=0x%08X", (unsigned)id);
-        if (id != 0 && id != 0xFFFFFFFF) {
+        if (is_valid_display_id(id)) {
             ESP_LOGW("DETECT", "Found display on CYD pins -> CYD");
             display_info = {
                 .type = DisplayType::DISP_CYD,
@@ -199,8 +210,8 @@ void bridge_lcd::detect_display()
         auto* d32 = new LGFX_D32_Pro();
         d32->init();
         uint32_t id = d32->getPanel()->readCommand(0x04, 0, 4);
-        ESP_LOGW("DETECT", "D32 Pro init+read: ID=0x%06X", (unsigned)id);
-        if (id != 0 && id != 0xFFFFFF) {
+        ESP_LOGW("DETECT", "D32 Pro init+read: ID=0x%08X", (unsigned)id);
+        if (is_valid_display_id(id)) {
             ESP_LOGW("DETECT", "Found D32 Pro TFT (ILI9341)");
             tft = d32;  // Keep the initialized display object
             display_info = {
@@ -221,8 +232,8 @@ void bridge_lcd::detect_display()
         auto* ttgo = new LGFX_TFT_ESPI();
         ttgo->init();
         uint32_t id = ttgo->getPanel()->readCommand(0x04, 0, 4);
-        ESP_LOGW("DETECT", "TTGO init+read: ID=0x%06X", (unsigned)id);
-        if (id != 0 && id != 0xFFFFFF) {
+        ESP_LOGW("DETECT", "TTGO init+read: ID=0x%08X", (unsigned)id);
+        if (is_valid_display_id(id)) {
             ESP_LOGW("DETECT", "Found TTGO TFT (ST7789)");
             tft = ttgo;  // Keep the initialized display object
             display_info = {
@@ -244,8 +255,8 @@ void bridge_lcd::detect_display()
         m5->configure(true);  // Plus2 variant
         m5->init();
         uint32_t id = m5->getPanel()->readCommand(0x04, 0, 4);
-        ESP_LOGW("DETECT", "M5StickC Plus2 init+read: ID=0x%06X", (unsigned)id);
-        if (id != 0 && id != 0xFFFFFF) {
+        ESP_LOGW("DETECT", "M5StickC Plus2 init+read: ID=0x%08X", (unsigned)id);
+        if (is_valid_display_id(id)) {
             ESP_LOGW("DETECT", "Found M5StickC Plus2");
             tft = m5;  // Keep the initialized display object
             display_info = {
@@ -649,7 +660,33 @@ void bridge_lcd::print_line(const char *left_text, const char *middle_text, cons
 
     tft->setTextDatum(textdatum_t::top_right);
     tft->drawString(right_text, 128, starting_pixel_row);
-#elif defined(LCD_TFT) || defined(UNIVERSAL_BUILD)
+#elif defined(UNIVERSAL_BUILD)
+    int16_t starting_pixel_row = 0;
+    if (display_info.type == DisplayType::DISP_SSD1306) {
+        // SSD1306 OLED: 128x64, small text layout
+        starting_pixel_row = (SSD_LINE_CLEARANCE + SSD1306_FONT_HEIGHT) * (line - 1) + SSD_LINE_CLEARANCE;
+        tft->setTextDatum(textdatum_t::top_left);
+        tft->drawString(left_text, 0, starting_pixel_row);
+        tft->setTextDatum(textdatum_t::top_left);
+        tft->drawString(middle_text, 48, starting_pixel_row);
+        tft->setTextDatum(textdatum_t::top_right);
+        tft->drawString(right_text, 128, starting_pixel_row);
+    } else {
+        // TFT displays: 240x320 or 135x240
+        starting_pixel_row = (tft->fontHeight()) * (line - 1) + 2;
+        if(add_gutter)
+            tft->drawString(left_text, 25, starting_pixel_row);
+        else
+            tft->drawString(left_text, 1, starting_pixel_row);
+        yield();
+        tft->drawString(middle_text, 134, starting_pixel_row);
+        yield();
+        if(add_gutter)
+            tft->drawString(right_text, 300 - tft->textWidth(right_text), starting_pixel_row);
+        else
+            tft->drawString(right_text, tft->width() - 1 - tft->textWidth(right_text), starting_pixel_row);
+    }
+#elif defined(LCD_TFT)
     int16_t starting_pixel_row = 0;
     starting_pixel_row = (tft->fontHeight()) * (line - 1) + 2;
 
