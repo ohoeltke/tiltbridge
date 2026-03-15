@@ -82,10 +82,15 @@ On the first attempt with the 3.2" CYD, the display remained dark. Cause: The **
 
 ## Current Status
 
-- ✅ Build compiles successfully (`env:cyd`)
-- ✅ Flash usage: 50.2% (only +2.5 KB compared to single-display version)
-- ✅ **ESP32-2432S032 (3.2" ST7789)**: Display works, detected via ID `0x81`
-- ✅ Touch was not explicitly tested, but the code is identical to the working `env:cyd` version
+This CYD-specific auto-detection has been **incorporated into the full universal
+build** (`env:esp32_universal`). The `LGFX_CYD` class with its runtime panel
+detection is now part of the universal build's display class set in `lovyan_config.h`.
+
+- ✅ Build compiles successfully (both `env:cyd` and `env:esp32_universal`)
+- ✅ **ESP32-2432S032 (3.2" ST7789)**: Verified on both `cyd-universal` and `esp32-universal` branches
+  - ID: `ID04(d1)=0xD9818181`, `IDDA=0x81`, `IDDB=0x81`, `IDDC=0xB3`
+  - Detected as ST7789, backlight GPIO 27
+  - Logo, WiFi, mDNS, Tilt display all working
 
 ## Pending Tests
 
@@ -96,7 +101,7 @@ On the first attempt with the 3.2" CYD, the display remained dark. Cause: The **
 - [ ] **ESP32-2432S024 (2.4")** — What IDs does this board return?
 
 ### Test Procedure:
-1. Flash binary: `pio run -e cyd -t upload --upload-port /dev/cu.usbserial-XX`
+1. Flash universal binary: use `esptool.py` with `esp32_universal` firmware
 2. Open serial monitor (115200 baud)
 3. Press the reset button
 4. Look for `W (xxx) CYD:` lines — these show the read IDs and the detected display type
@@ -105,6 +110,11 @@ On the first attempt with the 3.2" CYD, the display remained dark. Cause: The **
 ### What to do with unknown IDs:
 - Note the serial log lines `ID04(d1)=...`, `IDDA=...` etc.
 - If the display is not recognized: add the new ID values to the `is_st7789`, `is_ili9342`, or `is_ili9341` conditions in `lovyan_config.h`
+
+## Related Documentation
+
+- **[ESP32_UNIVERSAL_BUILD_NOTES.md](ESP32_UNIVERSAL_BUILD_NOTES.md)** — Full universal build notes
+- **[AUTODETECTION_DEEP_DIVE.md](AUTODETECTION_DEEP_DIVE.md)** — Detection logic deep dive
 
 ## Debug Logging
 

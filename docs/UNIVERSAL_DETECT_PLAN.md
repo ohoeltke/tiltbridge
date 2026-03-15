@@ -6,19 +6,26 @@ Replace the six separate ESP32 build environments with a **single binary** that 
 
 ESP32-S3 environments remain separate (different chip).
 
-## Probe Sequence
+## Probe Sequence (as implemented)
 
 ```
-1. I2C: AXP192 (0x34) on SDA=21/SCL=22     → M5StickC Plus
-2. SPI: HSPI (SCLK=13, MOSI=15, CS=5)       → M5StickC Plus2
-3. SPI: HSPI (SCLK=14, MOSI=13, CS=15)      → CYD (sub-detect ILI9341/9342/ST7789)
-4. SPI: VSPI (SCLK=18, MOSI=23, CS=14)      → D32 Pro
-5. SPI: VSPI (SCLK=18, MOSI=19, CS=5)       → TTGO TFT
-6. I2C: SSD1306 (0x3C) on multiple pin combos → OLED
-7. Nothing found                              → Headless
+1. I2C: AXP192 (0x34) on SDA=21/SCL=22       → M5StickC Plus
+2. SPI: HSPI bare probe (SCLK=14, MOSI=13,
+        MISO=12, DC=2, CS=15)                  → CYD (sub-detect ILI9341/9342/ST7789)
+3. SPI: VSPI full init (SCLK=18, MOSI=23,
+        MISO=19, DC=27, CS=14, RST=33)         → D32 Pro
+4. SPI: VSPI full init (SCLK=18, MOSI=19,
+        DC=16, CS=5)                            → TTGO TFT
+5. SPI: HSPI full init (SCLK=13, MOSI=15,
+        DC=14, CS=5)                            → M5StickC Plus2
+6. I2C: SSD1306 (0x3C) on multiple pin combos  → OLED
+7. Nothing found                                → Headless
 ```
 
-No conflicts: each board uses unique pin combinations. I2C and SPI are independent buses. Each probe releases the bus after testing.
+Note: The probe order changed from the original plan. CYD was moved to #2
+(lightweight bare SPI probe, unique HSPI pins), and M5StickC Plus2 to #5
+(requires full LGFX init). See [AUTODETECTION_DEEP_DIVE.md](AUTODETECTION_DEEP_DIVE.md)
+for the rationale and risk analysis.
 
 ## Display Categories
 
@@ -85,16 +92,26 @@ struct DisplayInfo {
 
 From 50% → ~55% utilization. Still ~1.4 MB free.
 
-## Risk Assessment
+## Implementation Status
 
-| Board           | Risk   | Reason                                          |
-|-----------------|--------|--------------------------------------------------|
-| CYD             | LOW    | Already tested, dedicated HSPI pins              |
-| M5StickC Plus   | LOW    | AXP192 I2C is unique identifier                  |
-| SSD1306         | LOW    | I2C probe well-established                       |
-| D32 Pro         | MEDIUM | VSPI probe must be separated from TTGO           |
-| TTGO            | MEDIUM | Same bus as D32, different pins                   |
-| M5StickC Plus2  | MEDIUM | No AXP192, detection only via SPI pins            |
+All phases are implemented and tested on 3 boards:
+- ✅ D32 Pro + ILI9341 TFT
+- ✅ CYD 3.2" ST7789
+- ✅ Heltec WiFi Kit 32 SSD1306 OLED
+
+Per-board build environments are kept for backward compatibility.
+The universal build coexists alongside them.
+
+## Risk Assessment (updated with test results)
+
+| Board           | Risk   | Reason                                          | Status |
+|-----------------|--------|--------------------------------------------------|--------|
+| CYD             | LOW    | Bare HSPI probe, unique pins, tested             | ✅ Verified |
+| M5StickC Plus   | LOW    | AXP192 I2C is unique identifier                  | ⏳ Untested |
+| SSD1306         | LOW    | I2C probe well-established, tested               | ✅ Verified |
+| D32 Pro         | LOW    | Full init probe with RST, tested                 | ✅ Verified |
+| TTGO            | MEDIUM | Same VSPI bus as D32, different pins              | ⏳ Untested |
+| M5StickC Plus2  | MEDIUM | No AXP192, full init probe needed                | ⏳ Untested |
 
 ## Files to Modify
 
