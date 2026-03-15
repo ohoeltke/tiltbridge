@@ -6,10 +6,37 @@
 #define LOGO_TIME 2     // Time (in seconds) to display the logo
 #define TILT_TIME 10    // Time (in seconds) to display the Tilt screen
 
-// There are three different LCD options, set depending on what is defined in platformio.ini:
-// LCD_SSD1306 - For the OLED displays
-// LCD_TFT - For larger TFT displays
-// LCD_TFT_ESPI - For smaller TFT displays
+// ---- Runtime display detection types ----
+enum class DisplayType {
+    DISP_NONE,          // Headless (no display)
+    DISP_SSD1306,       // 128x64 I2C OLED
+    DISP_CYD,           // 240x320 CYD (ILI9341/ILI9342/ST7789 auto-detected)
+    DISP_D32_PRO,       // 240x320 ILI9341 on VSPI (Lolin D32 Pro)
+    DISP_M5STICKC_PLUS, // 135x240 ST7789 (AXP192 power)
+    DISP_M5STICKC_PLUS2,// 135x240 ST7789 (GPIO power)
+    DISP_TTGO_TFT,      // 135x240 ST7789
+};
+
+enum class DisplayCategory {
+    CAT_NONE,           // No display
+    CAT_SMALL,          // 128x64 or 135x240 — uses oled_logo, small text
+    CAT_LARGE,          // 240x320 — uses tft_logo, large text
+};
+
+struct DisplayInfo {
+    DisplayType type;
+    DisplayCategory category;
+    int width;
+    int height;
+    bool has_touch;
+    bool has_axp192;
+    int tilts_per_page;
+    const char* hardware_version;
+};
+
+// ---- Legacy compile-time defines (kept for backward compatibility) ----
+// These are still used by per-board environments. The universal build
+// sets them based on runtime detection results.
 
 #ifdef LCD_SSD1306
 #include <LovyanGFX.hpp>
@@ -44,6 +71,22 @@
 #define TFT_ESPI_LINE_CLEARANCE 4
 #define TFT_ESPI_FONT_HEIGHT    2
 #endif
+
+#elif defined(UNIVERSAL_BUILD)
+// Universal build — all display types available, selected at runtime
+#include <LovyanGFX.hpp>
+#include "lovyan_config.h"
+#define HAVE_LCD                1
+#define SSD1306_FONT_HEIGHT     10
+#define SSD_LINE_CLEARANCE      2
+#define FF_NORMAL               &FreeSans9pt7b
+#define FF_BIG                  &FreeSans12pt7b
+#define TILT_FONT_SIZE          2
+#define MIN_PRESSURE            2000
+#define TFT_ESPI_FONT_SIZE      20
+#define TFT_ESPI_LINE_CLEARANCE 4
+#define TFT_ESPI_FONT_HEIGHT    2
+#define TILTS_PER_PAGE          15 // Default for universal build; overridden at runtime later
 
 #endif // LCD_SSD1306
 
@@ -88,10 +131,15 @@ private:
     void print_tilt_to_line(tiltHydrometer *tilt, uint8_t line);
     bool i2c_device_at_address(uint8_t address, int sda_pin, int scl_pin);
 
-#ifdef LCD_TFT_M5STICKC
+#if defined(LCD_TFT_M5STICKC) || defined(UNIVERSAL_BUILD)
     enum class M5Variant { Plus, Plus2 };
     M5Variant detect_m5_variant();
     M5Variant m5_variant;
+#endif
+
+#ifdef UNIVERSAL_BUILD
+    DisplayInfo display_info;
+    void detect_display();
 #endif
 
     uint8_t display_next();                             // Not in impl
